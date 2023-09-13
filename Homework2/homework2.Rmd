@@ -1,0 +1,226 @@
+---
+title: "scRNA-seq: Data Analysis"
+author: "Dina Khasanova and Aleksandra Olshanova"
+date: "May 22, 2023"
+output:
+  pdf_document: default
+  html_document: default
+---
+For this homework, we will be analyzing the a dataset of 500 Human peripheral blood mononuclear cells (PBMCs) of a healthy female donor aged 25-30 freely available from 10X Genomics. 
+
+Libraries were generated from ~1675 cells (~500 cells recovered) as described in the Chromium Next GEM Single Cell 3' LT Reagent Kits (v3.1 Dual Index) User Guide (CG000399 RevB) using the Chromium Controller and sequenced on an Illumina NovaSeq 6000 to a read depth of 50k mean reads per cell.
+
+The raw data can be found [here](https://www.10xgenomics.com/resources/datasets/500-human-pbm-cs-3-lt-v-3-1-chromium-controller-3-1-low-6-1-0).
+
+```{r include=FALSE}
+library(dplyr)
+library(Seurat)
+library(patchwork)
+```
+
+We start by importing the data using the Read10X() function, which gives us a unique molecular identifier (UMI) count matrix. This matrix represents the number of molecules detected for each gene in each cell. We then created a Seurat object using the count matrix, which serves as a container for the single-cell dataset's data and analysis results.
+
+Our data contains 703 cells (illustrated below).
+
+```{r init}
+# Load the dataset
+pbmc.data <- Read10X(data.dir = "/Users/sashaolshanova/Git/machine learning course/filtered_feature_bc_matrix")
+# Initialize the Seurat object with the raw (non-normalized data).
+pbmc <- CreateSeuratObject(counts = pbmc.data,  project = "pbmc3k", min.cells = 3, min.features = 200)
+dim(pbmc)
+```
+
+# Standard pre-processing workflow for scRNA-seq data in Seurat
+
+In this work we will focus on selecting and filtering cells based on quality control (QC) metrics, normalizing and scaling the data, and identifying highly variable features.
+
+## QC and selecting cells for further analysis
+
+Firs of all, we will explore mitochondrial contamination, as low-quality / dying cells often exhibit extensive mitochondrial contamination. We calculated mitochondrial QC metrics with the `PercentageFeatureSet()` function. This function calculates the percentage of counts originating from a set of features by using the set of all genes starting with `MT-`.
+
+```{r mito, fig.height=7, fig.width=13}
+pbmc[["percent.mt"]] <- PercentageFeatureSet(pbmc, pattern = "^MT-")
+head(pbmc[["percent.mt"]], 3)
+```
+After calculating the quality control (QC) metrics for mitochondria, it became crucial for us to gain insights into the distribution of these values. 
+
+Another important QC metric includes the number of unique genes detected in each cell:
+1) Low-quality cells or empty droplets will often have very few genes
+2) Cell doublets or multiplets may exhibit an aberrantly high gene count
+
+To analyze this, we employed a VlnPlot approach, which is presented below. 
+
+```{r}
+#Visualize QC metrics as a VlnPlot
+VlnPlot(pbmc, features = c("nFeature_RNA", "percent.mt"), ncol = 3)
+```
+The results clearly indicated the need to eliminate samples exhibiting mitochondrial contamination exceeding 25%. 
+Also, we filtered cells that have unique feature counts over 5,900.
+
+```{r}
+pbmc <- subset(pbmc, subset = nFeature_RNA < 5900 & percent.mt < 25)
+dim(pbmc)
+```
+Eventually, after removing unwanted cells from the dataset, we have 684 cells left. 
+
+# Normalizing the data
+
+Once the undesirable cells have been eliminated from the dataset, the subsequent procedure involves data normalization. Our default approach is to utilize a global-scaling normalization method known as "LogNormalize." This method normalizes the feature expression measurements for each cell by considering the total expression. It then applies a scaling factor (typically set at 10,000 by default) and performs a logarithmic transformation on the outcome. The resulting normalized values can be found in the `pbmc[["RNA"]]@data`.
+
+```{r include=FALSE}
+pbmc <- NormalizeData(pbmc, normalization.method = "LogNormalize", scale.factor = 10000)
+```
+
+# Identification of highly variable features (feature selection)
+
+In the subsequent step, we determined a subset of features that demonstrate significant cell-to-cell variation within the dataset. These particular features display a high expression level in certain cells while being expressed at a low level in others. By concentrating on these genes during downstream analysis, we enhance the visibility of biological signals within single-cell datasets.
+
+By default, we provided 2,000 features per dataset for further analysis, such as principal component analysis (PCA). These selected features serve as valuable inputs in downstream analytical procedures.
+
+```{r var_features, fig.height=3, fig.width=6}
+pbmc <- FindVariableFeatures(pbmc, selection.method = 'vst', nfeatures = 2000)
+# Identify the 5 most highly variable genes
+top5 <- head(VariableFeatures(pbmc), 5)
+# plot variable features with
+plot1 <- VariableFeaturePlot(pbmc)
+plot2 <- LabelPoints(plot = plot1, points = top5, repel = TRUE)
+plot2
+```
+```{r}
+top5
+```
+Summary of the highly expressed features:
+
+GNLY (Granulysin). Diseases associated with GNLY include Erythema Multiforme and Kyphoscoliotic Heart Disease.
+
+IGLC2 (Immunoglobulin Lambda Constant 2). Among its related pathways are Network map of SARS-CoV-2 signaling pathway. 
+
+GZMB (Granzyme B).Diseases associated with GZMB include Peripheral T-Cell Lymphoma and Severe Cutaneous Adverse Reaction.
+
+S100A9 (S100 Calcium Binding Protein A9). Diseases associated with S100A9 include Cystic Fibrosis and Juvenile Rheumatoid Arthritis. 
+
+CDKN1C (Cyclin Dependent Kinase Inhibitor 1C). Diseases associated with CDKN1C include Beckwith-Wiedemann Syndrome and Intrauterine Growth Retardation, Metaphyseal Dysplasia, Adrenal Hypoplasia Congenita, And Genital Anomalies.
+
+# Scaling the data
+
+Next, we apply a linear transformation ('scaling') that is a standard pre-processing step prior to dimensional reduction techniques like PCA. The results of this are stored in `pbmc[["RNA"]]@scale.data`
+
+```{r regress, fig.height=7, fig.width=11, include=FALSE, results='hide'}
+all.genes <- rownames(pbmc)
+pbmc <- ScaleData(pbmc, features = all.genes)
+```
+
+# Perform linear dimensional reduction
+
+Next, we proceed with performing Principal Component Analysis (PCA) on the scaled data. By default, only the variable features that were determined earlier are utilized as input. 
+
+```{r pca,results='hide'}
+pbmc <- RunPCA(pbmc, features = VariableFeatures(object = pbmc))
+```
+
+# PCA Visualization
+
+```{r}
+print(pbmc[['pca']], dims = 1:5, nfeatures = 5)
+DimPlot(pbmc, reduction = 'pca')
+```
+Upon examining the PCA plot, it becomes evident that the first principal component is capable of effectively separating our data points into distinct groups. In contrast, the second principal component lacks the ability to differentiate points that fall below the 20 mark on the PC-2 axis.
+
+# Determine the 'dimensionality' of the dataset
+
+To overcome the extensive technical noise in any single feature for scRNA-seq data, Seurat clusters cells based on their PCA scores, with each PC essentially representing a 'metafeature' that combines information across a correlated feature set. 
+
+How many components should we choose to include?
+
+```{r warning=FALSE}
+pbmc <- JackStraw(pbmc, num.replicate = 100)
+pbmc <- ScoreJackStraw(pbmc, dims = 1:20)
+JackStrawPlot(pbmc, dims = 1:15)
+```
+The JackStrawPlot() function visualizes the distribution of p-values for each PC compared to a uniform distribution. Significant PCs show an enrichment of features with low p-values, while a drop-off in significance is observed after the first 5 PCs.
+
+```{r elbow_plot, fig.height=4, fig.width=4}
+ElbowPlot(pbmc)
+```
+
+The ElbowPlot() function ranks PCs based on variance explained. In this case, an elbow around PC5-6 suggests that the majority of true signal is captured within the first 5 PCs.
+
+We will choose 5.
+
+# Cluster the cells by using the KNN algorithm
+
+* A KNN graph based on the euclidean distance in PCA space using the `FindNeighbors()` function, and taking as input the previously defined dimensionality of the dataset (first 5 PCs).
+
+* Modularity optimization techniques such as the Louvain algorithm (default) or SLM by using the `FindClusters()` function with 5 close neibours settings.
+
+```{r cluster, fig.height=5, fig.width=7, include=FALSE}
+pbmc <- FindNeighbors(pbmc, dims = 1:5)
+pbmc <- FindClusters(pbmc, resolution = 0.5)
+```
+
+The clusters can be found using the `Idents()` function.
+
+```{r}
+# Look at cluster IDs of the first 5 cells
+head(Idents(pbmc), 5)
+```
+Overall, the KNN algorithm found 6 possible clusters. Let's visualise it based on defined clusters after implementing the KNN algorithm.
+
+
+```{r}
+print(pbmc[['pca']], dims = 1:5, nfeatures = 5)
+DimPlot(pbmc, reduction = 'pca')
+```
+It is evident that cluster 6 stands distinctly apart from all other groups, exhibiting a clear separation. Similarly, cluster number 5 displays a similar pattern of isolation. Regrettably, clusters 0-4 do not demonstrate a similar consistent behavior. In particular, cluster 3 appears to be distributed among clusters 0, 4, and 2, lacking a distinct pattern of its own. 
+
+PCA focuses on preserving the global structure of the data by maximizing the variance along the principal components. It may not capture complex non-linear relationships present in the data. So, we decided to try another dimensional reduction technique, like UMAP. UMAP often produces more visually appealing and informative visualizations.
+
+# Run non-linear dimensional reduction (UMAP)
+
+As input to the UMAP, we used the same PCs as input to the clustering analysis.
+
+```{r tsne, fig.height=5, fig.width=7, include=FALSE}
+pbmc <- RunUMAP(pbmc, dims = 1:10)
+```
+
+```{r}
+umap_dimplot <- DimPlot(pbmc, reduction = 'umap', label=TRUE)
+umap_dimplot
+```
+Upon observation, it becomes apparent that the UMAP technique enables us to effectively segregate points into distinct groups. We conducted experiments with various dimension settings and discovered that the range of 1:6 to 1:10 yields the most favorable results. However, it should be noted that increasing the number of neighbors further leads to more dispersed clusters.
+
+# Finding differentially expressed features (cluster biomarkers)
+
+For now we would like to find markers that define clusters via differential expression.
+We will use `FindAllMarkers()` function, which automates an identification of positive and negative markers for all clusters. We will find markers for every cluster compared to all remaining cells and report only the positive ones with min.pct = 0.5.
+
+```{r include=FALSE}
+pbmc.markers <- FindAllMarkers(pbmc, only.pos = TRUE, min.pct = 0.5, logfc.threshold = 0.25)
+```
+
+```{r echo=TRUE}
+pbmc.markers %>% group_by(cluster) %>% slice_max(n = 2, order_by = avg_log2FC)
+```
+The table provided may not be the most effective way to explore the distribution of different genes among the clusters. Therefore, in the following section, we will attempt to visualize the markers instead.
+
+# Visualizing marker expression. 
+
+`VlnPlot()` (shows expression probability distributions across clusters), and `FeaturePlot()` (visualizes feature expression on a tSNE or PCA plot) are our most commonly used visualizations.
+
+```{r }
+VlnPlot(pbmc, features = c("GNLY", "IGLC2", "GZMB", "S100A9", "CDKN1C"),  slot = 'counts', log = TRUE)
+#  "GNLY"   "IGLC2"  "GZMB"   "S100A9" "CDKN1C"
+```
+```{r fig.height=6, fig.width=5}
+FeaturePlot(pbmc, features = c("GNLY", "IGLC2", "GZMB", "S100A9", "CDKN1C"))
+```
+
+By employing the functions 'VlnPlot()' and 'FeaturePlot()', we can visually examine the distribution of the top 5 genes among clusters. Notably, GNLY, IGLC2, and CDKN1C distinctly represent their respective clusters: GNLY in cluster 4, IGLC2 in cluster 5, and CDKN1C in cluster 2. However, GZMB is found in two distinct clusters, specifically cluster 4 and cluster 6. Interestingly, we encounter a contradictory result regarding the gene S100A9, as it is observed across all clusters simultaneously.
+
+# Summary
+
+In summary, our analysis of a dataset comprising 500 Human peripheral blood mononuclear cells (PBMCs) allowed us to explore various parameters successfully. Here are our key findings:
+
+We identified the top 5 highly expressed genes, namely "GNLY," "IGLC2," "GZMB," "S100A9," and "CDKN1C." These genes are known to play significant roles in various diseases.
+Through the implementation of PCA and UMAP techniques, we were able to discover and visualize six distinct clusters within the dataset.
+Importantly, we established a connection between the top 5 identified genes and their corresponding representative clusters, highlighting the gene-cluster associations.

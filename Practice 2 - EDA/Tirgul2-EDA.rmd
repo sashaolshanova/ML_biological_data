@@ -1,0 +1,287 @@
+---
+title: "Tirgul 2 - EDA"
+author: "Romi Goldner Kabeli"
+date: "3/21/2023"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+We'll perform Exploratory Data Analysis ("EDA") on the Diamonds dataset. This is a built-in
+dataset in the ggplot2 package, which is part of the tidyverse set of packages.
+
+First, load the tidyverse library, which contains everything we need to perform this analysis.
+
+```{r}
+install.packages("tinytex")
+```
+```{r}
+tinytex::install_tinytex()
+```
+
+
+
+
+```{r setup, include=FALSE}
+library(tidyverse)
+```
+
+## Data Structure
+
+As we mentioned, simply calling the name of the object will print it out, when possible. Note that while calling the object shows that it is a "tibble", using class shows that it is just a data.frame. Tibble is a special type of table where the data is considered "tidy".
+
+There are three interrelated rules which make a dataset tidy:
+- Each variable must have its own column.
+- Each observation must have its own row.
+- Each value must have its own cell.
+
+```{r}
+diamonds
+
+class(diamonds)
+```
+
+How can we get some more general information about the dataset?
+
+```{r}
+?diamonds
+```
+
+
+Some information is already known to us just from calling the table. We know how many rows and columns there are, and we have some idea regarding the type of variables (text, numeric) but not much else.
+
+A few commands to help us learn more about the structure of the data are shown here:
+
+```{r}
+# get dimensions, number of rows and columns
+dim(diamonds)
+nrow(diamonds) 
+ncol(diamonds)
+```
+
+```{r}
+# show first and last 6 (default) rows
+head(diamonds)
+tail(diamonds)
+```
+
+```{r}
+# column names
+names(diamonds)
+```
+
+
+
+```{r}
+# structure and summary of the data
+str(diamonds)
+summary(diamonds)
+```
+
+We can access specific values of a dataset using these commands:
+
+```{r}
+# first element in the first column of the data frame
+diamonds[1, 1]   
+# first element in the 6th column
+diamonds[1, 6]   
+# first column of the data frame
+diamonds[,1] # same as diamonds[1]
+# first three rows of the 6th column
+diamonds[1:3, 6] 
+# the 3rd row of the data frame 
+diamonds[3, ]    
+# equivalent to head_diamonds <- head(diamonds) (default of head if first 6 rows)
+head_diamonds <- diamonds[1:6, ] 
+```
+## Data Variation
+
+One important fact to know about our data is its variation, can you think of reasons why? 
+
+```{r}
+# plotting a scatter plot (with smoothing curve)
+ggplot(diamonds, aes(x=carat, y=price)) + geom_point() + geom_smooth(se=FALSE)
+
+# creating boxplot
+ggplot(data = diamonds, mapping = aes(x = carat, y = price)) + 
+  geom_boxplot(mapping = aes(group = cut_width(carat, 0.1)))
+
+# Variance between two categorical variables
+ggplot(data = diamonds) +
+  geom_count(mapping = aes(x = cut, y = color))
+
+```
+
+Which plot is better? What do we know about these two variables in regard to their variation?
+
+## Data Visualisation
+
+```{r}
+ggplot(data = diamonds) +
+  geom_bar(mapping = aes(x = cut))
+
+ggplot(data = diamonds) +
+  geom_histogram(mapping = aes(x = carat), binwidth = 0.5)
+
+ggplot(data = diamonds) +
+  geom_histogram(mapping = aes(x = carat), binwidth = 0.1)
+
+ggplot(data = diamonds) + 
+  geom_bar(mapping = aes(x = cut, fill = cut))
+
+ggplot(data = diamonds) + 
+  geom_bar(mapping = aes(x = cut, fill = clarity))
+```
+
+
+## Missing Values and unusual values
+
+Sometimes it can be difficult to see outlier values, so we have to "zoom in":
+
+```{r}
+ggplot(diamonds) + 
+  geom_histogram(mapping = aes(x = y), binwidth = 0.5)
+
+# zoom in to previous histogram (by limiting y value)
+ggplot(diamonds) + 
+  geom_histogram(mapping = aes(x = y), binwidth = 0.5) +
+  coord_cartesian(ylim = c(0, 50))
+```
+
+Now we can try to take a closer look at these values:
+
+```{r}
+unusual_values <- diamonds %>% 
+  filter(y < 3 | y > 20) %>% 
+  select(price, x, y, z) %>%
+  arrange(y)
+unusual_values
+```
+
+So what do we do with such values?
+
+There are several things we can do with missing values. When dealing with missing values, make sure you do not overwrite the original data, and that changes you make make sense. 
+Are these missing values missing? zero? NA? maybe there really should be a 0 there?
+
+The "simplest" option is just to drop the entire column/row, but this is also the least favorable solution:
+
+```{r}
+diamonds_filtered <- diamonds %>% 
+  filter(between(y, 3, 20))
+```
+
+We can also replace the unusual values with missing values, and later deal with all of them:
+
+```{r}
+diamonds_filtered <- diamonds %>% 
+  mutate(y = ifelse(y < 3 | y > 20, NA, y))
+```
+
+If we plot data with missing values (NA), ggplot will not show the NAs, but will warn us about them:
+
+```{r}
+ggplot(data = diamonds_filtered, mapping = aes(x = x, y = y)) + 
+  geom_point()
+```
+
+Later on we will learn of smarter ways to deal with NAs, and even fill them in with predicted values
+using different algorithms.
+
+Whatever you do with missing or unusual values, ALWAYS:
+- Save the original data
+- Document changes you've made
+- Explain why you made those changes
+
+## Manipulating Data
+
+```{r}
+# get data
+download.file(url = "https://ndownloader.figshare.com/files/2292169",
+              destfile = "/Users/romigoldner/Desktop/Bio_ML_2023/Tirgul2_EDA/portal_data_joined.csv")
+
+surveys <- read_csv("/Users/sashaolshanova/Git/machine learning course/Practice 2 - EDA-20230321/portal_data_joined.csv")
+```
+
+We'll focus less on the structure of the data, so just taking a quick look:
+
+```{r}
+str(surveys)
+view(surveys)
+```
+
+Selecting columns and filtering rows:
+
+```{r}
+# To select columns of a data frame, use select(). The first argument to this function is the data frame (surveys), and the subsequent arguments are the columns to keep
+
+select(surveys, plot_id, species_id, weight)
+
+# To save the selected columns into a new data frame, you have to assign it to a new variable
+surveys_selected <- select(surveys, plot_id, species_id, weight)
+
+# To select all columns except certain ones, put a "-" in front of the variable to exclude it.
+select(surveys, -record_id, -species_id)
+
+# To choose rows based on a specific criterion, use filter():
+filter(surveys, year == 1995)
+```
+
+Creating new columns based on existing data:
+
+```{r}
+# To create a new column of weight in kg:
+surveys %>%
+  mutate(weight_kg = weight / 1000)
+
+# same as above but without NAs:
+surveys %>%
+  filter(!is.na(weight)) %>%
+  mutate(weight_kg = weight / 1000) %>%
+  head()
+
+# Using pipes to create a second column based on the first created column:
+surveys %>%
+  mutate(weight_kg = weight / 1000,
+         weight_lb = weight_kg * 2.2)
+```
+
+A common practice is to calculate things by first splitting the data into groups, applying some function, and then combining the data again:
+
+```{r}
+# compute the mean weight by sex:
+surveys %>%
+  group_by(sex) %>%
+  summarize(mean_weight = mean(weight, na.rm = TRUE))
+
+surveys %>%
+  group_by(sex, species_id) %>%
+  summarize(mean_weight = mean(weight, na.rm = TRUE)) %>% 
+  tail()
+
+# same as above but with NAs
+surveys %>%
+  filter(!is.na(weight)) %>%
+  group_by(sex, species_id) %>%
+  summarize(mean_weight = mean(weight))
+
+# same as above but sort the output by minimum weight
+surveys %>%
+  filter(!is.na(weight)) %>%
+  group_by(sex, species_id) %>%
+  summarize(mean_weight = mean(weight),
+            min_weight = min(weight)) %>%
+  arrange(min_weight)
+
+# Using count:
+surveys %>%
+    group_by(sex) %>%
+    summarise(count = n())
+```
+
+This is a great, free, resource to practice basic R functions:
+
+https://r4ds.had.co.nz/index.html
+
+Also from within R studio go to Help > Cheatsheets > pick whichever one you need. 
+
+

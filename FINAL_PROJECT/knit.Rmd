@@ -1,0 +1,227 @@
+---
+title: "knit"
+author: "Dina Khasanova and Aleksandra Olshanova"
+date: "2023-07-27"
+output: 
+  pdf_document:
+    toc: true
+    toc_depth: 2
+---
+For this project we will build a classification model, which predict compound's accumulation in gram-negative bacteria cells.
+
+The data set comprises of compound names and their corresponding SMILES representations (187 compounds all together). Additionally, it includes information such as
+the formal charge of each compound, permeability coefficients for developing a regression model, and accumulation classes for constructing a classification model. The data set also contains residue data obtained during the docking algorithm, which is represented by an interaction fingerprint string. Each residue is encoded with zeros and ones to denote different types of interactions, including hydrogen bonds (HAccep, HDonor, and Ar-Hbond), halogen bonds (XBond), salt-bridge interactions (Salt), pi-cation interactions (PiCat), pi-pi interactions
+(PiFace, PiEdge), and hydrophobic interactions (HPhob). Each compound has from 13 to 15 conformations after docking. 
+
+First of all, we will upload essential libraries for analising the data, and building a model.
+```{r include=FALSE}
+library(dplyr)
+library(ggplot2)
+library(plotly)
+library(glue)
+library(corrplot)
+library(Rtsne)
+library(tidymodels)
+library('fastDummies')
+library(randomForest)
+library(caret)
+library(patchwork)
+library(gridExtra)
+library(e1071)
+library(class)
+library(sjmisc)
+```
+Uploading tha data:
+```{r}
+data <- read.csv("data_final_project_cleaned.csv")
+dim(data)
+names(data[, 0:10])
+```
+After uploading the data, a crucial step involves inspecting for NaN values. The presence of NaN values in the interaction fingerprint indicates that the compound was successfully docked within the channel, but no specific types of interactions were detected. To change it, we substitute these NaN values with "0". 
+```{r}
+anyNA(data)
+data[is.na(data)] <- as.integer(0)
+```
+After applying the docking algorithm, our data set consists of 2606 poses, accompanied by 784 generated interaction features, and 6 essential general properties necessary for model construction. It is worth noting that some interaction fingerprint features may have identical values, resulting in their insignificance for data point separation. Below is a summary of these specific features.
+```{r}
+summary(data[, 7:10])
+```
+Now, we will delete these features, and explore the left ones.
+```{r}
+list_residues = names(data[, 7:790])
+
+myList_delete <- c()
+myList_save <- c()
+for (name in list_residues) {
+  sum_value = sum(data[name])
+  if (sum_value == 0) {
+    myList_delete <- append(myList_delete, name)
+  }
+  else {
+    myList_save <- append(myList_save, name)
+  }
+}
+
+df = data[,!(names(data) %in% myList_delete)]
+
+glue('Number of features to save: {length(myList_save)}. 
+     Number of features to delete {length(myList_delete)}.')
+```
+Based on the literature, we have identified 5 crucial residues that are highly favorable for interactions, leading to a significant increase in accumulation value. Notably, binding to ASP113 greatly enhances the compound's penetration capability. Subsequently, we have created lists including all types of interactions facilitated by these 5 key residues.
+```{r}
+asp113 <- c("A.113.ASP..HDonor.nc", "A.113.ASP..HDonor.cc",
+            "A.113.ASP..HDonor.nn", "A.113.ASP..HDonor.cn", 
+            "A.113.ASP..Salt", "A.113.ASP..HPhob")
+glu117 <- c("A.117.GLU..HDonor.nc", "A.117.GLU..HDonor.cn", 
+            "A.117.GLU..HDonor.nn", "A.117.GLU..HDonor.cc", 
+            "A.117.GLU..Salt", "A.117.GLU..HPhob", "A.117.GLU..XBond")
+arg132 <- c("A.132.ARG..HAccep.nn", "A.132.ARG..HAccep.cn",
+            "A.132.ARG..HAccep.cc", "A.132.ARG..HAccep.nc",
+            "A.132.ARG..XBond","A.132.ARG..Salt", "A.132.ARG..PiCat" )
+arg82 <-  c("A.82.ARG..HAccep.nn", "A.82.ARG..HAccep.cn", 
+            "A.82.ARG..HAccep.cc", "A.82.ARG..HAccep.nc", 
+            "A.82.ARG..XBond","A.82.ARG..Salt","A.82.ARG..PiCat")
+agr42 <-  c("A.42.ARG..HAccep.nn", "A.42.ARG..HAccep.cn",
+            "A.42.ARG..HAccep.cc", "A.42.ARG..HAccep.nc","A.42.ARG..XBond",
+            "A.42.ARG..Salt","A.42.ARG..PiCat", "A.42.ARG..HPhob")
+lys16 <-  c("A.16.LYS..HAccep.cn", "A.16.LYS..HAccep.cc",
+            "A.16.LYS..XBond", "A.16.LYS..Salt", "A.16.LYS..PiCat", "A.16.LYS..HPhob")
+list_important_res <-list(list1 = asp113, list2 = glu117, 
+                          list3 = arg132 , list4= arg82 , list5 = lys16)
+```
+Given that each compound consists of approximately 13-15 poses, we plan to employ the "Voting algorithm" for the interaction fingerprint strings. This algorithm will enable us to select a representative interaction fingerprint string from the 15 available poses, effectively describing our compound's interactions.
+The "Voting algorithm" is described on the picture below.
+
+![Voting algorithm](/Users/sashaolshanova/Git/machine learning course/FINAL_PROJECT/voting.png)
+A threshold of "2" means an interaction exists in at least half of the poses to be considered in the compound. Similarly, a threshold of "15" means an interaction exists in at least one pose to be considered in the compound.
+Explored thresholds: 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15. 
+
+Additionally, we have established individual columns for all significant residues, utilizing binary notation with zeros and ones. In this context, a value of "1" signifies the presence of at least one interaction type, such as hydrogen bonds, halogen bonds, salt-bridge interactions, pi-cation interactions, pi-pi interactions, or hydrophobic interactions. A value of "0" indicates the absence of these interactions.
+
+```{r}
+threshold_list <- c(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15)
+empty_dict <- list()
+
+real_data = data.frame(matrix(ncol = 182, nrow = 0))
+colnames(real_data) <- c(names(df))
+
+for (number in threshold_list) {
+  
+  empty_dict[[paste0("df_threshold_", number)]] <- real_data  
+  
+  for (name in unique(df$name)) {
+    
+    small_data = df[df['name'] == name ,]
+    
+    threshold = dim(small_data)[1]/number
+    
+    list_values_row <- c(small_data[1,][, 0:6])
+    
+    for (residue in myList_save) {
+    sum_value = sum(small_data[residue])
+    
+    if (sum_value >= threshold) {
+      list_values_row<-append(list_values_row, as.integer(1))
+    } else {
+      list_values_row<- append(list_values_row, as.integer(0))
+    }
+    }
+    
+    empty_dict[[paste0("df_threshold_", number)]][nrow(empty_dict
+                            [[paste0("df_threshold_", number)]]) + 1,] <- list_values_row
+  }
+  
+    for (column_p in list_important_res) {
+      new_col <- c()
+    
+      for (index in rownames(empty_dict[[paste0("df_threshold_", number)]])) {
+        sum_res = sum(empty_dict[[paste0("df_threshold_", number)]][index, column_p])
+        
+        if (sum_res > 0) {
+          new_col<-append(new_col, as.integer(1))
+        } else {
+          new_col<- append(new_col, as.integer(0))
+        }
+      }
+      
+      name_Y =paste0("residue", strsplit(column_p[1], split = '[.]')[[1]])
+      empty_dict[[paste0("df_threshold_", number)]][name_Y[2]] <- new_col
+    }
+}
+
+```
+Eventually, we got 15 new dataframes describing each threshold. We put all of them into the dictionary empty_dict to use later. 
+
+Besides the interaction fingerprint we can a formal charge feature. So, Let's have a look how formal charge can influence on the Permeability.coefficient. 
+```{r fig.height = 3, fig.width = 5}
+ggplot(empty_dict$df_threshold_6, aes(x = as.character(FormalCharge) ,
+                                      y = Permeability.coefficient)) +
+  geom_boxplot(fill = "skyblue", color = "black") +
+  labs(x = "Charge", y = "Permeability.coefficient", 
+  title = "Charge influence on permeability coefficient")
+```
+
+It is quiet obvious that positive charged molecules have higher permeability coefficient.
+
+After implementing the voting algorithm, our focus shifts to examining the simultaneous influence of charge and an essential residue (ASP113) on the Permeability coefficient. The plot below illustrates the results for a threshold of 6. Notably, positively charged compounds that interact with ASP113 display significantly higher Permeability coefficients.
+```{r fig.height = 4, fig.width = 8}
+ggplot(empty_dict$df_threshold_6, aes(x=as.character(FormalCharge), 
+    y=Permeability.coefficient, fill=as.character(residue113))) + 
+    geom_boxplot() +
+    facet_wrap(~FormalCharge, scale="free") +
+    labs(x = "Charge + ASP113", y = "Permeability.coefficient", 
+    title = "Influence of ASP113 on permeability coefficient for different charges")
+```
+We were curious is it important to 
+
+```{r echo=TRUE, fig.height=6, fig.width=12, message=FALSE, warning=FALSE, paged.print=FALSE}
+graths = c()
+#all residues
+for (number in threshold_list) {
+  number_interaction <- c()
+  for (index in rownames(empty_dict[[paste0("df_threshold_", number)]])) {
+        sum_res = sum(empty_dict[[paste0("df_threshold_", number)]]
+              [index, 9:(dim(empty_dict[[paste0("df_threshold_", number)]])[2] - 5 )])
+        number_interaction  <- append(number_interaction, sum_res)
+  }
+  empty_dict[[paste0("df_threshold_", number)]]['all_interactions'] <- number_interaction
+}
+
+selected_threshold_list = c(15)
+for (number in selected_threshold_list) {
+plot = ggplot(empty_dict[[paste0("df_threshold_", number)]], 
+  aes(x = Permeability.coefficient, y = all_interactions, 
+  label = empty_dict[[paste0("df_threshold_", number)]]$Accumulation_class, 
+  col = Accumulation_class)) +
+  geom_point() +
+  ggrepel::geom_text_repel(cex = 2.5) +
+  labs(x = "Permeability.coefficient", y = "All_interactions", title = number)
+#print(plot)
+graths[['all_int']] = plot 
+}
+
+# five important residues
+list_pp  <- c("residue113","residue117", "residue132", "residue82", "residue16")
+for (number in threshold_list) {
+  number_interaction <- c()
+  for (index in rownames(empty_dict[[paste0("df_threshold_", number)]])) {
+        sum_res = sum(empty_dict[[paste0("df_threshold_", number)]][index, list_pp])
+        number_interaction  <- append(number_interaction, sum_res)
+  }
+  empty_dict[[paste0("df_threshold_", number)]]['all_important_residues'] <- 
+    number_interaction
+}
+for (number in selected_threshold_list) {
+plot_imp = ggplot(empty_dict[[paste0("df_threshold_", number)]],
+  aes(x = Permeability.coefficient, y = all_important_residues,
+  label = empty_dict[[paste0("df_threshold_", number)]]$Accumulation_class, 
+  col = Accumulation_class)) +
+  geom_point() +
+  ggrepel::geom_text_repel(cex = 2.5) +
+  labs(x = "Permeability.coefficient", y = "All important residues", title = number)
+#print(plot_imp)
+graths[['all_int_imp']] = plot_imp
+}
+
+graths_plot <- grid.arrange(grobs=graths,ncol=2, nrow = 1)
+```
